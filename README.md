@@ -4,11 +4,7 @@ This repo is a reference for model predictive control algorithms for vehicles.
 
 It is focused on education and builds up from a simple model with only position and yaw to more complex models.
 
-{% note %}
-
-**Note:** The algorithms expect a time parameterised trajectory to be followed. 
-
-{% endnote %} 
+> **Note:** The algorithms expect a time parameterised trajectory to be followed. 
 
 Currently available:
 1. FirstOrderMPC: Position and yaw angle
