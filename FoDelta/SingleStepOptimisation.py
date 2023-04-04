@@ -4,13 +4,16 @@ import matplotlib.pyplot as plt
 import casadi as ca
 
 speed = 2 # m/s
+L = 0.33 # vehicle wheelbase
 VERBOSE = False
+VERBOSE = True
 
 def create_test_path():
-    n = 20
-    ones, zeros = [1] * n, [-1] * n
+    n = 6
+    steering = 0.38
+    ones, zeros = [steering] * n, [-steering] * n
     controls = []
-    for i in range(3):
+    for i in range(10):
         controls.append(zeros)
         controls.append(ones)
     controls = np.array(controls).reshape(-1)
@@ -28,13 +31,13 @@ def update_state(x, u, dt):
 
     Args:
         x (ndarray(3)): pos_x, pos_y, theta
-        u (float): theta_dot
+        u (float): delta
         dt (floar): timestep
 
     Returns:
         ndarray(3): new_state
     """
-    dx = np.array([np.cos(x[2])*speed, np.sin(x[2])*speed, u])
+    dx = np.array([np.cos(x[2])*speed, np.sin(x[2])*speed, speed/L * np.tan(u)])
     x_next = x + dx * dt
     return x_next
 
@@ -47,8 +50,7 @@ class SingleStepMPC:
         
         self.nx = 3
         self.nu = 1
-        self.u_lim = 1.5
-        
+        self.u_lim = 0.4
         
     def generate_reference_path(self, x0):
         nearest_idx = np.argmin(np.linalg.norm(self.path - x0[:2], axis=1))
@@ -56,8 +58,10 @@ class SingleStepMPC:
         reference_path = self.path[nearest_idx:nearest_idx+self.N+2]
         
         reference_theta = np.arctan2(reference_path[1:, 1] - reference_path[:-1, 1], reference_path[1:, 0] - reference_path[:-1, 0])
-        u0_estimated = np.diff(reference_theta) / self.dt
-        u0_estimated[0] += (reference_theta[0]- x0[2]) / self.dt
+        th_dot = np.diff(reference_theta) 
+        th_dot[0] += (reference_theta[0]- x0[2]) 
+        
+        u0_estimated = (np.arctan(th_dot) * L / speed) / self.dt
         
         return reference_path, u0_estimated
         
@@ -120,7 +124,7 @@ class SingleStepMPC:
         plt.title(f"States and Reference Path ")
         plt.legend()
         # plt.xlim(-0.5, 4)
-        plt.savefig("Imgs/FO_single_step.svg")
+        plt.savefig("Imgs/FODelta_single_step.svg")
         
         if VERBOSE: 
             plt.figure(2)
@@ -138,13 +142,12 @@ class SingleStepMPC:
         
         plt.show()
         
-
 def f(x, u):
     # define the dynamics as a casadi array
     xdot = ca.vertcat(
         ca.cos(x[2])*speed,
         ca.sin(x[2])*speed,
-        u[0]
+        speed/L * ca.tan(u[0])
     )
     return xdot
 
