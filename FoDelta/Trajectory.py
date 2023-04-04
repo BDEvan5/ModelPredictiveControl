@@ -60,14 +60,13 @@ class Trajectory:
         plt.axis('equal')
         # plt.show()
         
-    def get_contsant_speed_timed_trajectory_segment(self, position, dt = 0.1, n_pts=10):
-        speed = 2
-        position_distances = np.linalg.norm(self.wpts-position, axis=1)
+    def get_contsant_speed_timed_trajectory_segment(self, position, dt = 0.1, n_pts=10, speed = 2):
+        position_distances = np.linalg.norm(self.wpts-position[0:2], axis=1)
         i = np.argmin(position_distances)
         
         distance = dt * speed 
         
-        interpolated_distances = np.arange(self.ss[i], self.ss[i] + distance*(n_pts+1), distance)
+        interpolated_distances = np.linspace(self.ss[i], self.ss[i]+distance*(n_pts), n_pts)
         
         interpolated_xs = np.interp(interpolated_distances, self.ss, self.wpts[:, 0])
         interpolated_ys = np.interp(interpolated_distances, self.ss, self.wpts[:, 1])
@@ -85,6 +84,8 @@ class Trajectory:
             plt.xlabel("cumulative distance")
             
             plt.show()    
+            
+        return interpolated_waypoints
             
     def get_timed_trajectory_segment(self, position, dt = 0.1, n_pts=10):
         trajectory, distances = [], []
