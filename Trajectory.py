@@ -5,6 +5,7 @@ from matplotlib import pyplot as plt
 from matplotlib.collections import LineCollection
 
 VERBOSE = False
+# VERBOSE = True
 
 class Trajectory:
     def __init__(self, map_name):
@@ -80,9 +81,54 @@ class Trajectory:
             print(interpolated_waypoints)
         
             plt.figure(2)
-            plt.plot(cumulative_distances, self.wpts[:, 0], label='waypoints')
+            plt.plot(self.ss, self.wpts[:, 0], label='waypoints')
             plt.plot(interpolated_distances, interpolated_xs, label="Interp")
             plt.xlabel("cumulative distance")
+            
+            plt.show()    
+            
+    def get_timed_trajectory_segment(self, position, dt = 0.1, n_pts=10):
+        wpts = np.vstack((self.wpts[:, 0], self.wpts[:, 1])).T
+        
+        trajectory, distances = [], []
+        pose = position
+        for i in range(n_pts):
+            nearest_point, nearest_dist, t, i = nearest_point_on_trajectory_py2(pose[0:2], wpts, self.l2s, self.diffs)
+            distance = dt * self.vs[i]
+            
+            next_distance = self.ss[i] + distance
+            distances.append(next_distance)
+            
+            interpolated_x = np.interp(next_distance, self.ss, self.wpts[:, 0])
+            interpolated_y = np.interp(next_distance, self.ss, self.wpts[:, 1])
+            interpolated_v = np.interp(next_distance, self.ss, self.vs)
+            pose = np.array([interpolated_x, interpolated_y, interpolated_v])
+            trajectory.append(pose)
+        
+        interpolated_waypoints = np.array(trajectory)
+
+        if VERBOSE:
+            self.plot_wpts()
+            plt.plot(interpolated_waypoints[:, 0], interpolated_waypoints[:, 1], 'rx', markersize=10)
+            
+            print(interpolated_waypoints)
+        
+            plt.figure(2)
+            plt.plot(self.ss, self.wpts[:, 0], label='waypoints')
+            plt.plot(distances, interpolated_waypoints[:, 0], 'rx', label="Interp")
+            print(distances)
+            plt.xlabel("cumulative distance")
+            
+            plt.figure(3)
+            plt.plot(self.ss, self.vs, label='waypoints')
+            plt.plot(distances, interpolated_waypoints[:, 2], 'rx', label="Interp")
+            print(distances)
+            plt.xlabel("cumulative distance")
+            
+            plt.figure(4)
+            distances = np.array(distances)
+            plt.plot(np.diff(distances), 'rx')
+            plt.title("distances")
             
             plt.show()
     
@@ -244,5 +290,7 @@ def sub_locations(x1=[0, 0], x2=[0, 0], dx=1):
 if __name__ == "__main__":
     trajectory = Trajectory("esp")
 
-    trajectory.get_contsant_speed_timed_trajectory_segment(np.array([5, 0]), 0.1, 20)
+    # trajectory.get_contsant_speed_timed_trajectory_segment(np.array([5, 0]), 0.1, 20)
+    # trajectory.get_timed_trajectory_segment(np.array([10, 0]), 0.5, 20)
+    trajectory.get_timed_trajectory_segment(np.array([20, -15]), 0.5, 20)
 
