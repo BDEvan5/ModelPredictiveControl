@@ -1,7 +1,7 @@
 import numpy as np 
 import matplotlib.pyplot as plt
 from Trajectory import Trajectory
-
+import math, cmath
 import casadi as ca
 
 L = 0.33
@@ -38,10 +38,13 @@ class PlannerMPC:
         self.nu = 2
         self.u_min = [-0.4,-8]
         self.u_max = [0.4, 8]
+        fig, self.axs = plt.subplots(1, 2, figsize=(10, 5))
+        
         
     def estimate_u0(self, reference_path, x0):
         reference_theta = np.arctan2(reference_path[1:, 1] - reference_path[:-1, 1], reference_path[1:, 0] - reference_path[:-1, 0])
-        th_dot = np.diff(reference_theta) 
+        th_dot = calculate_angle_diff(reference_theta) 
+        # th_dot = np.diff(reference_theta) 
         th_dot[0] += (reference_theta[0]- x0[2]) 
         
         speeds = reference_path[:, 2]
@@ -77,7 +80,7 @@ class PlannerMPC:
         
         speeds = x_ref[2]
         # Add a speed objective cost.
-        J = ca.sumsqr(x[:2, :] - x_ref[:2, :])  + ca.sumsqr(x[3, :] - speeds[None, :]) *100
+        J = ca.sumsqr(x[:2, :] - x_ref[:2, :])  + ca.sumsqr(x[3, :] - speeds[None, :]) *10
         
         g = []
         for k in range(self.N):
@@ -94,7 +97,7 @@ class PlannerMPC:
             x_init.append(u_init[i])
         x_init = ca.vertcat(*x_init)
         
-        lbx = [-ca.inf] * self.nx * (self.N+1) + self.u_min * self.N
+        lbx = [-ca.inf, -ca.inf, -ca.inf, 0] * (self.N+1) + self.u_min * self.N
         ubx = [ca.inf, ca.inf, ca.inf, 8] * (self.N+1) + self.u_max * self.N
         
         x_nlp = ca.vertcat(x.reshape((-1, 1)), u.reshape((-1, 1)))
@@ -112,22 +115,49 @@ class PlannerMPC:
         u_bar = sol['x'][self.nx*(self.N+1):]
         
         if VERBOSE:
-            plt.figure(1)
-            plt.clf()
-            plt.plot(x_ref[0, :], x_ref[1, :], label="x_ref")
+            plt.sca(self.axs[0])
+            plt.cla()
+            # plt.clf()
+            plt.plot(x0_in[0], x0_in[1], 'gx', markersize=18, label="x0 - Vehicle")
+            plt.plot(x_ref[0, :], x_ref[1, :], 'bo', label="x_ref")
             init_states = np.array(x_init[:self.nx*(self.N+1)].reshape((self.nx, self.N+1)))
             plt.plot(init_states[0, :], init_states[1, :], label="Estimated States (x0)")
-            plt.plot(x_bar[0, :], x_bar[1, :], label="Solution States (x_bar)") 
+            plt.plot(x_bar[0, :], x_bar[1, :], 'rx', markersize=8, label="Solution States (x_bar)") 
             
             plt.title(f"States and Reference Path ")
             plt.legend()
             
+            plt.sca(self.axs[1])
+            plt.cla()
+            plt.title("Speed")
+            plt.plot(x_ref[2, :], label="x_ref")
+            init_states = np.array(x_init[:self.nx*(self.N+1)].reshape((self.nx, self.N+1)))
+            plt.plot(init_states[3, :], label="Estimated States (x0)")
+            plt.plot(x_bar[3, :], label="Solution States (x_bar)") 
+            
+            plt.legend()
             plt.pause(0.01)
         
         u_return = np.array(u_bar)[:, 0]
         u_return = u_return.reshape((self.N, self.nu))
         
         return u_return
+        
+def calculate_angle_diff(angle_vec):
+    angle_diff = np.zeros(len(angle_vec)-1)
+    for i in range(len(angle_vec)-1):
+        angle_diff[i] = sub_angles_complex(angle_vec[i], angle_vec[i+1])
+    
+    return angle_diff
+    
+def sub_angles_complex(a1, a2): 
+    real = math.cos(a1) * math.cos(a2) + math.sin(a1) * math.sin(a2)
+    im = - math.cos(a1) * math.sin(a2) + math.sin(a1) * math.cos(a2)
+
+    cpx = complex(real, im)
+    phase = cmath.phase(cpx)
+
+    return phase
         
         
 def f(x, u):
@@ -150,7 +180,8 @@ def run_simulation():
     plt.figure(2)
     plt.plot(t.wpts[:, 0], t.wpts[:, 1], label="path")
     
-    x0 = np.array([0, 0, 0, 0])
+    x0 = np.array([0, 0, 0, 1])
+    # x0 = np.array([30, -19, -np.pi*0.9, 4])
     x = x0
     states = []
     for i in range(200):
@@ -160,8 +191,10 @@ def run_simulation():
         states.append(x)
         
         plt.figure(2)
-        plt.plot(x[0], x[1], "ro")
-        plt.pause(0.0001)
+        plt.plot(x[0], x[1], "rx")
+        # plt.pause(0.0001)
+        # plt.show()
+        plt.pause(0.01)
         
     plt.title("Vehicle Path")
     plt.savefig(f"Imgs/FullMPC_vehicle_path_{map_name}.svg")

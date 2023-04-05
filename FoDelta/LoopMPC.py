@@ -6,7 +6,8 @@ import casadi as ca
 
 speed = 5 # m/s
 L = 0.33
-VERBOSE = False
+# VERBOSE = False
+VERBOSE = True
 
 def create_test_path():
     n = 8
