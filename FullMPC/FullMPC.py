@@ -9,7 +9,6 @@ VERBOSE = False
 VERBOSE = True
 
 
-
 def update_state(x, u, dt):
     """updates the state for simple dynamics
 
@@ -35,9 +34,10 @@ class PlannerMPC:
         self.dt = dt
         self.N = N # number of steps to predict
         
-        self.nx = 3
-        self.nu = 1
-        self.u_lim = 0.4
+        self.nx = 4
+        self.nu = 2
+        self.u_min = [-0.4,-8]
+        self.u_max = [0.4, 8]
         
     def estimate_u0(self, reference_path, x0):
         reference_theta = np.arctan2(reference_path[1:, 1] - reference_path[:-1, 1], reference_path[1:, 0] - reference_path[:-1, 0])
@@ -45,7 +45,11 @@ class PlannerMPC:
         th_dot[0] += (reference_theta[0]- x0[2]) 
         
         speeds = reference_path[:, 2]
-        u0_estimated = (np.arctan(th_dot) * L / speed) / self.dt
+        steering_angles = (np.arctan(th_dot) * L / speeds[:-2]) / self.dt
+        speeds[0] += (x0[3] - reference_path[0, 2] )
+        accelerations = np.diff(speeds) / self.dt
+        
+        u0_estimated = np.vstack((steering_angles, accelerations[:-1])).T
         
         return u0_estimated
         
@@ -71,7 +75,9 @@ class PlannerMPC:
         x = ca.SX.sym('x', self.nx, self.N+1)
         u = ca.SX.sym('u', self.nu, self.N)
         
-        J = ca.sumsqr(x[:2, :] - x_ref[:, :])
+        speeds = x_ref[2]
+        # Add a speed objective cost.
+        J = ca.sumsqr(x[:2, :] - x_ref[:2, :])  + ca.sumsqr(x[3, :] - speeds[None, :]) *100
         
         g = []
         for k in range(self.N):
@@ -83,12 +89,13 @@ class PlannerMPC:
 
         x_init = [x0_in]
         for i in range(1, self.N+1):
-            x_init.append(x_init[i-1] + f(x_init[i-1], [u_init[i-1]])*self.dt)
-        x_init.append(u_init)
+            x_init.append(x_init[i-1] + f(x_init[i-1], u_init[i-1])*self.dt)
+        for i in range(len(u_init)):
+            x_init.append(u_init[i])
         x_init = ca.vertcat(*x_init)
         
-        lbx = [-ca.inf] * self.nx * (self.N+1) + [-self.u_lim] * self.N
-        ubx = [ca.inf] * self.nx * (self.N+1) + [self.u_lim] * self.N
+        lbx = [-ca.inf] * self.nx * (self.N+1) + self.u_min * self.N
+        ubx = [ca.inf, ca.inf, ca.inf, 8] * (self.N+1) + self.u_max * self.N
         
         x_nlp = ca.vertcat(x.reshape((-1, 1)), u.reshape((-1, 1)))
         g_nlp = ca.vertcat(*g)
@@ -117,15 +124,19 @@ class PlannerMPC:
             
             plt.pause(0.01)
         
-        return np.array(u_bar)[:, 0]
+        u_return = np.array(u_bar)[:, 0]
+        u_return = u_return.reshape((self.N, self.nu))
+        
+        return u_return
         
         
 def f(x, u):
     # define the dynamics as a casadi array
     xdot = ca.vertcat(
-        ca.cos(x[2])*speed,
-        ca.sin(x[2])*speed,
-        speed/L * ca.tan(u[0])
+        ca.cos(x[2])*x[3],
+        ca.sin(x[2])*x[3],
+        x[3]/L * ca.tan(u[0]),
+        u[1]
     )
     return xdot
 
@@ -139,7 +150,7 @@ def run_simulation():
     plt.figure(2)
     plt.plot(t.wpts[:, 0], t.wpts[:, 1], label="path")
     
-    x0 = np.array([0, 0, 0])
+    x0 = np.array([0, 0, 0, 0])
     x = x0
     states = []
     for i in range(200):
@@ -153,7 +164,7 @@ def run_simulation():
         plt.pause(0.0001)
         
     plt.title("Vehicle Path")
-    plt.savefig(f"Imgs/FODelta_vehicle_path_{map_name}.svg")
+    plt.savefig(f"Imgs/FullMPC_vehicle_path_{map_name}.svg")
     plt.show()
     
     

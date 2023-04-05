@@ -97,7 +97,6 @@ class SingleStepMPC:
         ubx = [ca.inf, ca.inf, ca.inf, 8] * (self.N+1) + self.u_max * self.N
         
         # Create the NLP problem
-        u_shaped = u.reshape((-1, 1))
         x_nlp = ca.vertcat(x.reshape((-1, 1)), u.reshape((-1, 1)))
         g_nlp = ca.vertcat(*g)
         nlp = {'x': x_nlp,
