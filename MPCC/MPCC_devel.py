@@ -53,17 +53,12 @@ class PlannerMPC:
         self.X0 = np.zeros((self.N + 1, self.nx))
         self.warm_start = False
 
+        self.init_optimisation()
         self.init_constraints()
-        
-    def plan(self, x0):
-        s_current = self.rp.calculate_s(x0[0:2])
-        x0 = np.append(x0, s_current)
-
-        control = self.generate_optimal_path(x0)
-        
-        return control # return the first control action
-        
-    def generate_optimal_path(self, x0_in):
+        self.init_objective()
+        self.init_solver()
+       
+    def init_optimisation(self):
         # States
         x = ca.MX.sym('x')
         y = ca.MX.sym('y')
@@ -86,110 +81,6 @@ class PlannerMPC:
         self.Q[0, 0] = WEIGHT_CONTOUR  # cross track error
         self.Q[1, 1] = WEIGHT_LAG  # lag error
 
-        self.obj = 0  # Objective function
-        self.g = []  # constraints vector
-
-        st = self.X[:, 0]  # initial state
-        self.g = ca.vertcat(self.g, st - x0_in)  # initial condition constraints
-        for k in range(self.N):
-            st = self.X[:, k]
-            st_next = self.X[:, k + 1]
-            con = self.U[:, k]
-            t_angle = self.rp.angle_lut_t(st_next[3])
-            ref_x, ref_y = self.rp.center_lut_x(st_next[3]), self.rp.center_lut_y(st_next[3])
-            #Contouring error
-            e_c = ca.sin(t_angle) * (st_next[0] - ref_x) - ca.cos(t_angle) * (st_next[1] - ref_y)
-            #Lag error
-            e_l = -ca.cos(t_angle) * (st_next[0] - ref_x) - ca.sin(t_angle) * (st_next[1] - ref_y)
-            error = ca.vertcat(e_c, e_l)
-
-            self.obj = self.obj + ca.mtimes(ca.mtimes(error.T, self.Q), error) #! add a cost for the centerline velocity
-            self.obj = self.obj - con[1] * WEIGHT_PROGRESS #! add a cost for the speed
-
-            k1 = self.f(st, con)
-            st_next_euler = st + (self.dt * k1)
-            self.g = ca.vertcat(self.g, st_next - st_next_euler)  # compute constraints
-
-            # path boundary constraints
-            self.g = ca.vertcat(self.g, self.P[self.nx + 2 * k] * st_next[0] - self.P[self.nx + 2 * k + 1] * st_next[1])  # LB<=ax-by<=UB  --represents half space planes
-
-        # setup solver with bounds, and initial value
-        p = np.zeros(self.nx + 2 * self.N)
-        p[:self.nx] = x0_in
-
-        if not self.warm_start:
-            self.construct_warm_start_soln(x0_in)
-
-        right_points, left_points = self.get_path_constraints_points(self.X0)
-        for k in range(self.N):  # set the reference controls and path boundary conditions to track
-            delta_x_path = right_points[k, 0] - left_points[k, 0]
-            delta_y_path = right_points[k, 1] - left_points[k, 1]
-            p[self.nx + 2 * k:self.nx + 2 * k + 2] = [-delta_x_path, delta_y_path]
-            up_bound = max(-delta_x_path * right_points[k, 0] - delta_y_path * right_points[k, 1],
-                           -delta_x_path * left_points[k, 0] - delta_y_path * left_points[k, 1])
-            low_bound = min(-delta_x_path * right_points[k, 0] - delta_y_path * right_points[k, 1],
-                            -delta_x_path * left_points[k, 0] - delta_y_path * left_points[k, 1])
-            
-            self.lbg[self.nx - 1 + (self.nx + 1) * (k + 1), 0] = low_bound # check this, there could be an error
-            self.ubg[self.nx - 1 + (self.nx + 1) * (k + 1), 0] = up_bound
-
-        x_init = ca.vertcat(ca.reshape(self.X0.T, self.nx * (self.N + 1), 1),
-                         ca.reshape(self.u0.T, self.nu * self.N, 1))
-        OPT_variables = ca.vertcat(ca.reshape(self.X, self.nx * (self.N + 1), 1),
-                                ca.reshape(self.U, self.nu * self.N, 1))
-        
-        opts = {}
-        opts["ipopt"] = {}
-        opts["ipopt"]["max_iter"] = 2000
-        opts["ipopt"]["print_level"] = 0
-        opts["print_time"] = 0
-
-        nlp_prob = {'f': self.obj, 'x': OPT_variables, 'g': self.g, 'p': self.P}
-        self.solver = ca.nlpsol('solver', 'ipopt', nlp_prob, opts)
-        sol = self.solver(x0=x_init, lbx=self.lbx, ubx=self.ubx, lbg=self.lbg, ubg=self.ubg, p=p)
-
-
-        # Get state and control solution
-        self.X0 = ca.reshape(sol['x'][0:self.nx * (self.N + 1)], self.nx, self.N + 1).T  # get soln trajectory
-        u = ca.reshape(sol['x'][self.nx * (self.N + 1):], self.nu, self.N).T  # get controls solution
-
-        trajectory = self.X0.full()  # size is (N+1,n_states)
-        inputs = u.full()
-        first_control = inputs[0, :]
-
-        # Shift trajectory and control solution to initialize the next step
-        self.X0 = ca.vertcat(self.X0[1:, :], self.X0[self.X0.size1() - 1, :])
-        self.u0 = ca.vertcat(u[1:, :], u[u.size1() - 1, :])
-        # return con_first, trajectory, inputs
-
-        plt.figure(2)
-        pts = trajectory[:, 0:2]
-        plt.plot(pts[:, 0], pts[:, 1], 'r--')
-
-        return first_control[0]
-        
-    def construct_warm_start_soln(self, initial_state):
-        # Construct an initial estimated solution to warm start the optimization problem with valid path constraints
-        #! this will break for multiple laps
-        # if initial_state[3] >= self.arc_lengths_orig_l:
-        #     initial_state[3] -= self.arc_lengths_orig_l
-        p_initial = 2
-        initial_state[2] = self.rp.angle_lut_t(initial_state[3])
-        self.X0[0, :] = initial_state
-        for k in range(1, self.N + 1):
-            s_next = self.X0[k - 1, 3] + p_initial * self.dt
-            psi_next = self.rp.angle_lut_t(s_next)
-            x_next, y_next = self.get_point_at_centerline(s_next)
-
-            self.X0[k, :] = np.array([x_next.full()[0, 0], y_next.full()[0, 0], psi_next.full()[0, 0], s_next])
-
-        self.warm_start = True
-
-
-    def get_point_at_centerline(self, s):
-        x, y = self.rp.center_lut_x(s), self.rp.center_lut_y(s)
-        return x, y
-
     def init_constraints(self):
         '''Initialize constraints for states, dynamic model state transitions and control inputs of the system'''
         self.lbg = np.zeros((self.nx * (self.N + 1) + self.N, 1))
@@ -211,6 +102,61 @@ class PlannerMPC:
                 [[self.theta_max, self.p_max]])  # v and theta upper bound
             state_count += self.nu
 
+    def init_objective(self):
+        self.obj = 0  # Objective function
+        self.g = []  # constraints vector
+
+        st = self.X[:, 0]  # initial state
+        self.g = ca.vertcat(self.g, st - self.P[:self.nx])  # initial condition constraints
+        for k in range(self.N):
+            st = self.X[:, k]
+            st_next = self.X[:, k + 1]
+            con = self.U[:, k]
+            t_angle = self.rp.angle_lut_t(st_next[3])
+            ref_x, ref_y = self.rp.center_lut_x(st_next[3]), self.rp.center_lut_y(st_next[3])
+            #Contouring error
+            e_c = ca.sin(t_angle) * (st_next[0] - ref_x) - ca.cos(t_angle) * (st_next[1] - ref_y)
+            #Lag error
+            e_l = -ca.cos(t_angle) * (st_next[0] - ref_x) - ca.sin(t_angle) * (st_next[1] - ref_y)
+
+            self.obj = self.obj + e_c **2 * WEIGHT_CONTOUR  
+            self.obj = self.obj + e_l **2 * WEIGHT_LAG
+            self.obj = self.obj - con[1] * WEIGHT_PROGRESS #! add a cost for the speed
+
+            k1 = self.f(st, con)
+            st_next_euler = st + (self.dt * k1)
+            self.g = ca.vertcat(self.g, st_next - st_next_euler)  # compute constraints
+
+            # path boundary constraints
+            self.g = ca.vertcat(self.g, self.P[self.nx + 2 * k] * st_next[0] - self.P[self.nx + 2 * k + 1] * st_next[1])  # LB<=ax-by<=UB  --represents half space planes
+
+    def init_solver(self):
+        opts = {}
+        opts["ipopt"] = {}
+        opts["ipopt"]["max_iter"] = 2000
+        opts["ipopt"]["print_level"] = 0
+        opts["print_time"] = 0
+        
+        OPT_variables = ca.vertcat(ca.reshape(self.X, self.nx * (self.N + 1), 1),
+                                ca.reshape(self.U, self.nu * self.N, 1))
+
+        nlp_prob = {'f': self.obj, 'x': OPT_variables, 'g': self.g, 'p': self.P}
+        self.solver = ca.nlpsol('solver', 'ipopt', nlp_prob, opts)
+
+    def plan(self, x0):
+        s_current = self.rp.calculate_s(x0[0:2])
+        x0 = np.append(x0, s_current)
+
+        p = self.generate_constraints_and_parameters(x0)
+        states, controls = self.solve(p)
+
+        plt.figure(2)
+        plt.plot(states[:, 0], states[:, 1], 'r--')
+
+        first_control = controls[0, :]
+        
+        return first_control[0] # return the first control action
+
     def get_path_constraints_points(self, prev_soln):
         right_points = np.zeros((self.N, 2))
         left_points = np.zeros((self.N, 2))
@@ -219,7 +165,68 @@ class PlannerMPC:
             right_points[k - 1, :] = [self.rp.right_lut_x(s).full()[0, 0], self.rp.right_lut_y(s).full()[0, 0]]  # Right boundary
             left_points[k - 1, :] = [self.rp.left_lut_x(s).full()[0, 0], self.rp.left_lut_y(s).full()[0, 0]]  # Left boundary
 
-        return right_points, left_points
+        return right_points, left_points 
+
+    def generate_constraints_and_parameters(self, x0_in):
+        if not self.warm_start:
+            self.construct_warm_start_soln(x0_in)
+
+        p = np.zeros(self.nx + 2 * self.N)
+        p[:self.nx] = x0_in
+
+        right_points, left_points = self.get_path_constraints_points(self.X0)
+        for k in range(self.N):  # set the reference controls and path boundary conditions to track
+            
+            delta_x_path = right_points[k, 0] - left_points[k, 0]
+            delta_y_path = right_points[k, 1] - left_points[k, 1]
+            p[self.nx + 2 * k:self.nx + 2 * k + 2] = [-delta_x_path, delta_y_path]
+            up_bound = max(-delta_x_path * right_points[k, 0] - delta_y_path * right_points[k, 1],
+                           -delta_x_path * left_points[k, 0] - delta_y_path * left_points[k, 1])
+            low_bound = min(-delta_x_path * right_points[k, 0] - delta_y_path * right_points[k, 1],
+                            -delta_x_path * left_points[k, 0] - delta_y_path * left_points[k, 1])
+            
+            self.lbg[self.nx - 1 + (self.nx + 1) * (k + 1), 0] = low_bound # check this, there could be an error
+            self.ubg[self.nx - 1 + (self.nx + 1) * (k + 1), 0] = up_bound
+
+        return p
+
+
+    def solve(self, p):
+        x_init = ca.vertcat(ca.reshape(self.X0.T, self.nx * (self.N + 1), 1),
+                         ca.reshape(self.u0.T, self.nu * self.N, 1))
+
+        sol = self.solver(x0=x_init, lbx=self.lbx, ubx=self.ubx, lbg=self.lbg, ubg=self.ubg, p=p)
+
+        # Get state and control solution
+        self.X0 = ca.reshape(sol['x'][0:self.nx * (self.N + 1)], self.nx, self.N + 1).T  # get soln trajectory
+        u = ca.reshape(sol['x'][self.nx * (self.N + 1):], self.nu, self.N).T  # get controls solution
+
+        trajectory = self.X0.full()  # size is (N+1,n_states)
+        inputs = u.full()
+
+        # Shift trajectory and control solution to initialize the next step
+        self.X0 = ca.vertcat(self.X0[1:, :], self.X0[self.X0.size1() - 1, :])
+        self.u0 = ca.vertcat(u[1:, :], u[u.size1() - 1, :])
+
+        return trajectory, inputs
+        
+    def construct_warm_start_soln(self, initial_state):
+        # Construct an initial estimated solution to warm start the optimization problem with valid path constraints
+        #! this will break for multiple laps
+        # if initial_state[3] >= self.arc_lengths_orig_l:
+        #     initial_state[3] -= self.arc_lengths_orig_l
+        p_initial = 2
+        initial_state[2] = self.rp.angle_lut_t(initial_state[3])
+        self.X0[0, :] = initial_state
+        for k in range(1, self.N + 1):
+            s_next = self.X0[k - 1, 3] + p_initial * self.dt
+            psi_next = self.rp.angle_lut_t(s_next)
+            x_next, y_next = self.rp.center_lut_x(s_next), self.rp.center_lut_y(s_next)
+
+            self.X0[k, :] = np.array([x_next.full()[0, 0], y_next.full()[0, 0], psi_next.full()[0, 0], s_next])
+
+        self.warm_start = True
+
 
 
 
