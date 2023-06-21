@@ -88,7 +88,6 @@ class ReferencePath:
         idx = np.argmin(distances)
         x, h = self.interp_pts(idx, distances)
         s = (self.s_track[idx] + x) 
-        print(f"Point: {point} --> s: {s}")
 
         return s
 
@@ -172,7 +171,7 @@ class PlannerMPC:
         s_current = self.rp.calculate_s(x0[0:2])
         x0 = np.append(x0, s_current)
 
-        print(x0)
+        # print(x0)
         control = self.generate_optimal_path(x0)
         
         return control # return the first control action
@@ -218,6 +217,7 @@ class PlannerMPC:
             error = ca.vertcat(e_c, e_l)
 
             self.obj = self.obj + ca.mtimes(ca.mtimes(error.T, self.Q), error) #! add a cost for the centerline velocity
+            self.obj = self.obj - con[1] #! add a cost for the speed
 
             k1 = self.f(st, con)
             st_next_euler = st + (self.dt * k1)
@@ -256,6 +256,8 @@ class PlannerMPC:
         opts["ipopt"] = {}
         opts["ipopt"]["max_iter"] = 2000
         opts["ipopt"]["print_level"] = 0
+        opts["print_time"] = 0
+
         nlp_prob = {'f': self.obj, 'x': OPT_variables, 'g': self.g, 'p': self.P}
         self.solver = ca.nlpsol('solver', 'ipopt', nlp_prob, opts)
         sol = self.solver(x0=x_init, lbx=self.lbx, ubx=self.ubx, lbg=self.lbg, ubg=self.ubg, p=p)
@@ -278,7 +280,6 @@ class PlannerMPC:
         pts = trajectory[:, 0:2]
         plt.plot(pts[:, 0], pts[:, 1], 'r--')
 
-        print(first_control)
         return first_control[0]
         
     def construct_warm_start_soln(self, initial_state):
@@ -340,7 +341,7 @@ class PlannerMPC:
     
 def run_simulation():
     path = create_test_path()
-    planner = PlannerMPC(path, 0.1, 20)
+    planner = PlannerMPC(path, 0.2, 20)
     planner.rp.plot_path()
 
     x0 = np.array([0, 0, 0])
