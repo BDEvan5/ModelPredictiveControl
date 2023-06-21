@@ -9,6 +9,21 @@ VERBOSE = False
 L = 0.33
 WIDTH = 0.8 # m on each side
 
+def update_fo_state(x, u, dt):
+    """updates the state for simple dynamics
+
+    Args:
+        x (ndarray(3)): pos_x, pos_y, theta
+        u (float): theta_dot
+        dt (floar): timestep
+
+    Returns:
+        ndarray(3): new_state
+    """
+    dx = np.array([np.cos(x[2])*SPEED, np.sin(x[2])*SPEED, u])
+    x_next = x + dx * dt
+    return x_next
+
 
 def create_test_path():
     n = 20
@@ -21,7 +36,7 @@ def create_test_path():
     
     states = [[0, 0, np.pi/4]]
     for i in range(len(controls)):
-        x_next = update_state(states[-1], controls[i], 0.1)
+        x_next = update_fo_state(states[-1], controls[i], 0.1)
         states.append(x_next)
         
     return np.array(states)[:, 0:2]
@@ -67,31 +82,66 @@ class ReferencePath:
         V = pts
         lut = ca.interpolant(label, 'bspline', [u], V)
         return lut
+    
+    def calculate_s(self, point):
+        distances = np.linalg.norm(self.path - point, axis=1)
+        idx = np.argmin(distances)
+        x, h = self.interp_pts(idx, distances)
+        s = (self.s_track[idx] + x) 
+        print(f"Point: {point} --> s: {s}")
+
+        return s
+
+    def interp_pts(self, idx, dists):
+        d_ss = self.s_track[idx+1] - self.s_track[idx]
+        d1, d2 = dists[idx], dists[idx+1]
+
+        if d1 < 0.01: # at the first point
+            x = 0   
+            h = 0
+        elif d2 < 0.01: # at the second point
+            x = dists[idx] # the distance to the previous point
+            h = 0 # there is no distance
+        else:     # if the point is somewhere along the line
+            s = (d_ss + d1 + d2)/2
+            Area_square = (s*(s-d1)*(s-d2)*(s-d_ss))
+            if Area_square < 0:  # negative due to floating point precision
+                h = 0
+                x = d_ss + d1
+            else:
+                Area = Area_square**0.5
+                h = Area * 2/d_ss
+                x = (d1**2 - h**2)**0.5
+
+        return x, h
+
 
     def plot_path(self):
         plt.figure(2)
-        # plt.plot(self.path[:, 0], self.path[:, 1], label="path")
+        plt.clf()
 
         plt.plot(self.center_lut_x(self.s_track), self.center_lut_y(self.s_track), label="center")
         plt.plot(self.left_lut_x(self.s_track), self.left_lut_y(self.s_track), label="left")
         plt.plot(self.right_lut_x(self.s_track), self.right_lut_y(self.s_track), label="right")
 
-        plt.show()
+        # plt.show()
+
 
 def update_state(x, u, dt):
     """updates the state for simple dynamics
 
     Args:
         x (ndarray(3)): pos_x, pos_y, theta
-        u (float): theta_dot
+        u (float): delta
         dt (floar): timestep
 
     Returns:
         ndarray(3): new_state
     """
-    dx = np.array([np.cos(x[2])*SPEED, np.sin(x[2])*SPEED, u])
+    dx = np.array([np.cos(x[2])*SPEED, np.sin(x[2])*SPEED, SPEED/L * np.tan(u)])
     x_next = x + dx * dt
     return x_next
+
 
 
 class PlannerMPC:
@@ -114,26 +164,20 @@ class PlannerMPC:
 
         self.u0 = np.zeros((self.N, self.nu))
         self.X0 = np.zeros((self.N + 1, self.nx))
+        self.warm_start = False
 
-    def generate_reference_path(self, x0):
-        nearest_idx = np.argmin(np.linalg.norm(self.path - x0[:2], axis=1))
-        
-        reference_path = self.path[nearest_idx:nearest_idx+self.N+2]
-        
-        reference_theta = np.arctan2(reference_path[1:, 1] - reference_path[:-1, 1], reference_path[1:, 0] - reference_path[:-1, 0])
-        u0_estimated = np.diff(reference_theta) / self.dt
-        u0_estimated[0] += (reference_theta[0]- x0[2]) / self.dt
-        
-        return reference_path, u0_estimated
+        self.init_constraints()
         
     def plan(self, x0):
-        reference_path, u0_estimated = self.generate_reference_path(x0)
+        s_current = self.rp.calculate_s(x0[0:2])
+        x0 = np.append(x0, s_current)
+
+        print(x0)
+        control = self.generate_optimal_path(x0)
         
-        u_bar = self.generate_optimal_path(x0, reference_path[:-1].T, u0_estimated)
+        return control # return the first control action
         
-        return u_bar[0] # return the first control action
-        
-    def generate_optimal_path(self, x0_in, u_init):
+    def generate_optimal_path(self, x0_in):
         # States
         x = ca.MX.sym('x')
         y = ca.MX.sym('y')
@@ -153,7 +197,7 @@ class PlannerMPC:
         self.P = ca.MX.sym('P', self.nx + 2 * self.N) # init state and boundaries of the reference path
 
         self.Q = ca.MX.zeros(2, 2)
-        self.Q[0, 0] = 50  # cross track error
+        self.Q[0, 0] = 1  # cross track error
         self.Q[1, 1] = 1000  # lag error
 
         self.obj = 0  # Objective function
@@ -187,6 +231,9 @@ class PlannerMPC:
         p = np.zeros(self.nx + 2 * self.N)
         p[:self.nx] = x0_in
 
+        if not self.warm_start:
+            self.construct_warm_start_soln(x0_in)
+
         right_points, left_points = self.get_path_constraints_points(self.X0)
         for k in range(self.N):  # set the reference controls and path boundary conditions to track
             delta_x_path = right_points[k, 0] - left_points[k, 0]
@@ -200,11 +247,10 @@ class PlannerMPC:
             self.lbg[self.nx - 1 + (self.nx + 1) * (k + 1), 0] = low_bound # check this, there could be an error
             self.ubg[self.nx - 1 + (self.nx + 1) * (k + 1), 0] = up_bound
 
-        self.construct_warm_start_soln(x0_in)
         x_init = ca.vertcat(ca.reshape(self.X0.T, self.nx * (self.N + 1), 1),
-                         ca.reshape(self.u0.T, self.nx * self.N, 1))
-        OPT_variables = vertcat(reshape(self.X, self.n_states * (self.N + 1), 1),
-                                reshape(self.U, self.n_controls * self.N, 1))
+                         ca.reshape(self.u0.T, self.nu * self.N, 1))
+        OPT_variables = ca.vertcat(ca.reshape(self.X, self.nx * (self.N + 1), 1),
+                                ca.reshape(self.U, self.nu * self.N, 1))
         
         opts = {}
         opts["ipopt"] = {}
@@ -216,23 +262,25 @@ class PlannerMPC:
 
 
         # Get state and control solution
-        self.X0 = ca.reshape(sol['x'][0:self.nx * (self.N + 1)], self.nu, self.N + 1).T  # get soln trajectory
+        self.X0 = ca.reshape(sol['x'][0:self.nx * (self.N + 1)], self.nx, self.N + 1).T  # get soln trajectory
         u = ca.reshape(sol['x'][self.nx * (self.N + 1):], self.nu, self.N).T  # get controls solution
 
-        # Get the first control
-        con_first = u[0, :].T
         trajectory = self.X0.full()  # size is (N+1,n_states)
         inputs = u.full()
+        first_control = inputs[0, :]
 
         # Shift trajectory and control solution to initialize the next step
         self.X0 = ca.vertcat(self.X0[1:, :], self.X0[self.X0.size1() - 1, :])
         self.u0 = ca.vertcat(u[1:, :], u[u.size1() - 1, :])
         # return con_first, trajectory, inputs
 
-        return con_first
+        plt.figure(2)
+        pts = trajectory[:, 0:2]
+        plt.plot(pts[:, 0], pts[:, 1], 'r--')
+
+        print(first_control)
+        return first_control[0]
         
-        # return np.array(u_bar)[:, 0]
-    
     def construct_warm_start_soln(self, initial_state):
         # Construct an initial estimated solution to warm start the optimization problem with valid path constraints
         #! this will break for multiple laps
@@ -245,10 +293,14 @@ class PlannerMPC:
             s_next = self.X0[k - 1, 3] + p_initial * self.dt
             psi_next = self.rp.angle_lut_t(s_next)
             x_next, y_next = self.get_point_at_centerline(s_next)
-            self.X0[k, :] = [x_next, y_next, psi_next, s_next]
+
+            self.X0[k, :] = np.array([x_next.full()[0, 0], y_next.full()[0, 0], psi_next.full()[0, 0], s_next])
+
+        self.warm_start = True
+
 
     def get_point_at_centerline(self, s):
-        x, y = self.rp.center_lut_xy(s), self.rp.center_lut_y(s)
+        x, y = self.rp.center_lut_x(s), self.rp.center_lut_y(s)
         return x, y
 
     def init_constraints(self):
@@ -276,33 +328,26 @@ class PlannerMPC:
         right_points = np.zeros((self.N, 2))
         left_points = np.zeros((self.N, 2))
         for k in range(1, self.N + 1):
-            right_points[k - 1, :] = [self.rp.right_lut_x(prev_soln[k, 3]),
-                                      self.rp.right_lut_y(prev_soln[k, 3])]  # Right boundary
-            left_points[k - 1, :] = [self.rp.left_lut_x(prev_soln[k, 3]),
-                                     self.rp.left_lut_y(prev_soln[k, 3])]  # Left boundary
+            s = prev_soln[k, 3]
+            right_points[k - 1, :] = [self.rp.right_lut_x(s).full()[0, 0], self.rp.right_lut_y(s).full()[0, 0]]  # Right boundary
+            left_points[k - 1, :] = [self.rp.left_lut_x(s).full()[0, 0], self.rp.left_lut_y(s).full()[0, 0]]  # Left boundary
+
         return right_points, left_points
 
-def f(x, u):
-    # define the dynamics as a casadi array
-    xdot = ca.vertcat(
-        ca.cos(x[2])*SPEED,
-        ca.sin(x[2])*SPEED,
-        u[0]
-    )
-    return xdot
+
 
         
     
 def run_simulation():
     path = create_test_path()
-    planner = PlannerMPC(path, 0.1, 10)
-    plt.figure(2)
-    plt.plot(path[:, 0], path[:, 1], label="path")
-    
+    planner = PlannerMPC(path, 0.1, 20)
+    planner.rp.plot_path()
+
     x0 = np.array([0, 0, 0])
     x = x0
     states = []
     for i in range(100):
+        planner.rp.plot_path()
         u = planner.plan(x)
         x = update_state(x, u, 0.1)
     
@@ -311,9 +356,11 @@ def run_simulation():
         plt.figure(2)
         plt.plot(x[0], x[1], "ro")
         plt.pause(0.0001)
+
+        # plt.show()
         
     plt.title("Vehicle Path")
-    plt.savefig("Imgs/FO_vehicle_path.svg")
+    plt.savefig("Imgs/FO_mpcc_vehicle_path.svg")
     plt.show()
     
 
@@ -322,7 +369,7 @@ def test_path():
     p.plot_path()
     
 if __name__ == "__main__":
-    # run_simulation()
+    run_simulation()
 
 
-    test_path()
+    # test_path()
