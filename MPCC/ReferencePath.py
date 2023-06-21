@@ -116,9 +116,9 @@ class ReferencePath:
         plt.figure(2)
         plt.clf()
 
-        plt.plot(self.center_lut_x(self.s_track), self.center_lut_y(self.s_track), label="center")
-        plt.plot(self.left_lut_x(self.s_track), self.left_lut_y(self.s_track), label="left")
-        plt.plot(self.right_lut_x(self.s_track), self.right_lut_y(self.s_track), label="right")
+        plt.plot(self.center_lut_x(self.s_track), self.center_lut_y(self.s_track), label="center", color='blue')
+        plt.plot(self.left_lut_x(self.s_track), self.left_lut_y(self.s_track), label="left", color='green')
+        plt.plot(self.right_lut_x(self.s_track), self.right_lut_y(self.s_track), label="right", color='green')
 
         # plt.show()
 

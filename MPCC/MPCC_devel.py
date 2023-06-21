@@ -9,7 +9,7 @@ from ReferencePath import ReferencePath
 SPEED = 2 # m/s
 VERBOSE = False
 L = 0.33
-WIDTH = 0.8 # m on each side
+WIDTH = 0.5 # m on each side
 
 WEIGHT_PROGRESS = 10
 WEIGHT_LAG = 100
@@ -32,10 +32,9 @@ def update_state(x, u, dt):
     return x_next
 
 
-
 class PlannerMPC:
     def __init__(self, dt, N):
-        self.rp = ReferencePath()
+        self.rp = ReferencePath(WIDTH)
         self.dt = dt
         self.N = N # number of steps to predict
         self.nx = 4
@@ -147,25 +146,21 @@ class PlannerMPC:
         s_current = self.rp.calculate_s(x0[0:2])
         x0 = np.append(x0, s_current)
 
-        p = self.generate_constraints_and_parameters(x0)
+        p, pts_l, pts_r = self.generate_constraints_and_parameters(x0)
         states, controls = self.solve(p)
+
+        c_pts = [[self.rp.center_lut_x(states[k, 3]), self.rp.center_lut_y(states[k, 3])] for k in range(self.N + 1)]
 
         plt.figure(2)
         plt.plot(states[:, 0], states[:, 1], 'r--')
+        for i in range(self.N + 1):
+            xs = [states[i, 0], c_pts[i][0]]
+            ys = [states[i, 1], c_pts[i][1]]
+            plt.plot(xs, ys, '--', color='orange')
 
         first_control = controls[0, :]
         
         return first_control[0] # return the first control action
-
-    def get_path_constraints_points(self, prev_soln):
-        right_points = np.zeros((self.N, 2))
-        left_points = np.zeros((self.N, 2))
-        for k in range(1, self.N + 1):
-            s = prev_soln[k, 3]
-            right_points[k - 1, :] = [self.rp.right_lut_x(s).full()[0, 0], self.rp.right_lut_y(s).full()[0, 0]]  # Right boundary
-            left_points[k - 1, :] = [self.rp.left_lut_x(s).full()[0, 0], self.rp.left_lut_y(s).full()[0, 0]]  # Left boundary
-
-        return right_points, left_points 
 
     def generate_constraints_and_parameters(self, x0_in):
         if not self.warm_start:
@@ -174,22 +169,27 @@ class PlannerMPC:
         p = np.zeros(self.nx + 2 * self.N)
         p[:self.nx] = x0_in
 
-        right_points, left_points = self.get_path_constraints_points(self.X0)
+        points_left = np.zeros((self.N, 2))
+        points_right = np.zeros((self.N, 2))
         for k in range(self.N):  # set the reference controls and path boundary conditions to track
-            
-            delta_x_path = right_points[k, 0] - left_points[k, 0]
-            delta_y_path = right_points[k, 1] - left_points[k, 1]
+            s = self.X0[k, 3]
+            right_point = [self.rp.right_lut_x(s).full()[0, 0], self.rp.right_lut_y(s).full()[0, 0]]
+            left_point = [self.rp.left_lut_x(s).full()[0, 0], self.rp.left_lut_y(s).full()[0, 0]]
+            points_left[k, :] = left_point
+            points_right[k, :] = right_point
+
+            delta_x_path = right_point[0] - left_point[0]
+            delta_y_path = right_point[1] - left_point[1]
             p[self.nx + 2 * k:self.nx + 2 * k + 2] = [-delta_x_path, delta_y_path]
-            up_bound = max(-delta_x_path * right_points[k, 0] - delta_y_path * right_points[k, 1],
-                           -delta_x_path * left_points[k, 0] - delta_y_path * left_points[k, 1])
-            low_bound = min(-delta_x_path * right_points[k, 0] - delta_y_path * right_points[k, 1],
-                            -delta_x_path * left_points[k, 0] - delta_y_path * left_points[k, 1])
-            
+
+            up_bound = max(-delta_x_path * right_point[0] - delta_y_path * right_point[1],
+                           -delta_x_path * left_point[0] - delta_y_path * left_point[1])
+            low_bound = min(-delta_x_path * right_point[0] - delta_y_path * right_point[1],
+                            -delta_x_path * left_point[0] - delta_y_path * left_point[1])
             self.lbg[self.nx - 1 + (self.nx + 1) * (k + 1), 0] = low_bound # check this, there could be an error
             self.ubg[self.nx - 1 + (self.nx + 1) * (k + 1), 0] = up_bound
 
-        return p
-
+        return p, points_left, points_right
 
     def solve(self, p):
         x_init = ca.vertcat(ca.reshape(self.X0.T, self.nx * (self.N + 1), 1),
@@ -229,11 +229,10 @@ class PlannerMPC:
 
 
 
-
         
     
 def run_simulation():
-    planner = PlannerMPC(0.3, 10)
+    planner = PlannerMPC(0.2, 10)
     planner.rp.plot_path()
 
     x0 = np.array([0, 0, 0])
@@ -242,13 +241,14 @@ def run_simulation():
     for i in range(70):
         planner.rp.plot_path()
         u = planner.plan(x)
-        x = update_state(x, u, 0.1)
+        x = update_state(x, u, 0.2)
     
         states.append(x)
         
         plt.figure(2)
         plt.plot(x[0], x[1], "ro")
         plt.pause(0.0001)
+        plt.pause(0.5)
 
         # plt.show()
         
