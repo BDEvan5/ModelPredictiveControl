@@ -138,8 +138,8 @@ class PlannerMPC:
         opts = {}
         opts["ipopt"] = {}
         opts["ipopt"]["max_iter"] = 2000
-        # opts["ipopt"]["print_level"] = 0
-        # opts["print_time"] = 0
+        opts["ipopt"]["print_level"] = 0
+        opts["print_time"] = 0
         
         OPT_variables = ca.vertcat(ca.reshape(self.X, self.nx * (self.N + 1), 1),
                                 ca.reshape(self.U, self.nu * self.N, 1))
@@ -230,12 +230,18 @@ class PlannerMPC:
         for k in range(1, self.N + 1):
             s_next = self.X0[k - 1, 3] + p_initial * self.dt
             psi_next = self.rp.angle_lut_t(s_next)
-            if initial_state[2] > np.pi:
+
+            if initial_state[2] > np.pi/2 and psi_next < 0:
                 psi_next += np.pi * 2
+            if initial_state[2] < -np.pi/2:
+                psi_next -= np.pi * 2
+
             x_next, y_next = self.rp.center_lut_x(s_next), self.rp.center_lut_y(s_next)
 
             self.X0[k, :] = np.array([x_next.full()[0, 0], y_next.full()[0, 0], psi_next.full()[0, 0], s_next])
-
+        
+        print(f"Warm start solution angles -> x0: {initial_state}")
+        print(self.X0[:, 2])
         self.warm_start = True
 
 
@@ -248,12 +254,12 @@ def run_simulation():
 
     # x0 = np.array([20, 0, -3])
     # x0 = np.array([20, 0, -2.5])
-    x0 = np.array([0, 0, 0.0])
-    # x0 = np.array([18, -4.8, 2.9])
+    # x0 = np.array([0, 0, 0.0])
+    x0 = np.array([18, -4.8, 2.9])
     x = x0
     states = []
-    x[2] += np.pi*2
-    x[2] += 0.5
+    # x[2] += np.pi*2
+    # x[2] += 0.5
     for i in range(70):
         # planner.rp.plot_path()
         u = planner.plan(x)
@@ -266,7 +272,7 @@ def run_simulation():
         plt.plot(x[0], x[1], "ro")
         plt.pause(0.0001)
         # plt.pause(0.5)
-        breakpoint()
+        # breakpoint()
 
         # plt.show()
         
