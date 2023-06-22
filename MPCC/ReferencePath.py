@@ -34,8 +34,11 @@ def create_test_path():
     for i in range(len(controls)):
         x_next = update_fo_state(states[-1], controls[i], 0.1)
         states.append(x_next)
-        
-    return np.array(states)[:, 0:2]
+    
+    path = np.array(states)[:, 0:2]
+    # path[:, 0] = path[::-1, 0]
+
+    return path
 
 class ReferencePath:
     def __init__(self, width=0.8):
@@ -57,6 +60,7 @@ class ReferencePath:
         right_path = self.path - self.nvecs * width
         self.left_lut_x, self.left_lut_y = self.get_interpolated_path_casadi('lut_left_x', 'lut_left_y', left_path, self.s_track)
         self.right_lut_x, self.right_lut_y = self.get_interpolated_path_casadi('lut_right_x', 'lut_right_y', right_path, self.s_track)
+        # self.plot_path()
 
     def init_path(self):
         self.path = create_test_path()

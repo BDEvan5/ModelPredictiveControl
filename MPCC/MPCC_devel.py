@@ -11,7 +11,7 @@ VERBOSE = False
 L = 0.33
 WIDTH = 0.5 # m on each side
 
-WEIGHT_PROGRESS = 10
+WEIGHT_PROGRESS = 1
 WEIGHT_LAG = 100
 WEIGHT_CONTOUR = 1
 
@@ -40,10 +40,10 @@ class PlannerMPC:
         self.nx = 4
         self.nu = 2
         
-        self.x_min, self.y_min = np.min(self.rp.path, axis=0)
-        self.psi_min, self.s_min = -np.pi, 0
-        self.x_max, self.y_max = np.max(self.rp.path, axis=0)
-        self.psi_max, self.s_max = np.pi, self.rp.s_track[-1]
+        self.x_min, self.y_min = np.min(self.rp.path, axis=0) - 2
+        self.psi_min, self.s_min = -100, 0
+        self.x_max, self.y_max = np.max(self.rp.path, axis=0) + 2
+        self.psi_max, self.s_max = 100, self.rp.s_track[-1]
 
         self.theta_min, self.p_min = -0.4, 0
         self.theta_max, self.p_max = 0.4, 4
@@ -133,8 +133,8 @@ class PlannerMPC:
         opts = {}
         opts["ipopt"] = {}
         opts["ipopt"]["max_iter"] = 2000
-        opts["ipopt"]["print_level"] = 0
-        opts["print_time"] = 0
+        # opts["ipopt"]["print_level"] = 0
+        # opts["print_time"] = 0
         
         OPT_variables = ca.vertcat(ca.reshape(self.X, self.nx * (self.N + 1), 1),
                                 ca.reshape(self.U, self.nu * self.N, 1))
@@ -148,9 +148,10 @@ class PlannerMPC:
 
         p, pts_l, pts_r = self.generate_constraints_and_parameters(x0)
         states, controls = self.solve(p)
+        print(states[:, 2])
+        c_pts = [[self.rp.center_lut_x(states[k, 3]).full()[0, 0], self.rp.center_lut_y(states[k, 3]).full()[0, 0]] for k in range(self.N + 1)]
 
-        c_pts = [[self.rp.center_lut_x(states[k, 3]), self.rp.center_lut_y(states[k, 3])] for k in range(self.N + 1)]
-
+        self.rp.plot_path()
         plt.figure(2)
         plt.plot(states[:, 0], states[:, 1], 'r--')
         for i in range(self.N + 1):
@@ -163,8 +164,8 @@ class PlannerMPC:
         return first_control[0] # return the first control action
 
     def generate_constraints_and_parameters(self, x0_in):
-        if not self.warm_start:
-            self.construct_warm_start_soln(x0_in)
+        # if not self.warm_start:
+        self.construct_warm_start_soln(x0_in)
 
         p = np.zeros(self.nx + 2 * self.N)
         p[:self.nx] = x0_in
@@ -175,8 +176,8 @@ class PlannerMPC:
             s = self.X0[k, 3]
             right_point = [self.rp.right_lut_x(s).full()[0, 0], self.rp.right_lut_y(s).full()[0, 0]]
             left_point = [self.rp.left_lut_x(s).full()[0, 0], self.rp.left_lut_y(s).full()[0, 0]]
-            points_left[k, :] = left_point
-            points_right[k, :] = right_point
+            # points_left[k, :] = left_point.full()[0, 0]
+            # points_right[k, :] = right_point.full()[0, 0]
 
             delta_x_path = right_point[0] - left_point[0]
             delta_y_path = right_point[1] - left_point[1]
@@ -203,6 +204,8 @@ class PlannerMPC:
 
         trajectory = self.X0.full()  # size is (N+1,n_states)
         inputs = u.full()
+        stats = self.solver.stats()
+        print(stats['return_status'])
 
         # Shift trajectory and control solution to initialize the next step
         self.X0 = ca.vertcat(self.X0[1:, :], self.X0[self.X0.size1() - 1, :])
@@ -215,9 +218,10 @@ class PlannerMPC:
         #! this will break for multiple laps
         # if initial_state[3] >= self.arc_lengths_orig_l:
         #     initial_state[3] -= self.arc_lengths_orig_l
+        self.X0 = np.zeros((self.N + 1, self.nx))
         p_initial = 2
-        initial_state[2] = self.rp.angle_lut_t(initial_state[3])
         self.X0[0, :] = initial_state
+        self.X0[0, 2] = self.rp.angle_lut_t(initial_state[3])
         for k in range(1, self.N + 1):
             s_next = self.X0[k - 1, 3] + p_initial * self.dt
             psi_next = self.rp.angle_lut_t(s_next)
@@ -232,16 +236,19 @@ class PlannerMPC:
         
     
 def run_simulation():
-    planner = PlannerMPC(0.2, 10)
+    planner = PlannerMPC(0.1, 20)
     planner.rp.plot_path()
 
+    # x0 = np.array([20, 0, -3])
+    # x0 = np.array([20, 0, -2.5])
     x0 = np.array([0, 0, 0])
     x = x0
     states = []
+    # x[2] += np.pi*2
     for i in range(70):
-        planner.rp.plot_path()
+        # planner.rp.plot_path()
         u = planner.plan(x)
-        x = update_state(x, u, 0.2)
+        x = update_state(x, u, 0.1)
     
         states.append(x)
         
