@@ -11,16 +11,16 @@ VERBOSE = False
 L = 0.33
 WIDTH = 0.5 # m on each side
 
-WEIGHT_PROGRESS = 1
-WEIGHT_LAG = 100
-WEIGHT_CONTOUR = 1
+WEIGHT_PROGRESS = 0
+WEIGHT_LAG = 10
+WEIGHT_CONTOUR = 10
 
 
 def update_state(x, u, dt):
     """updates the state for simple dynamics
 
     Args:
-        x (ndarray(3)): pos_x, pos_y, theta
+        x (ndarray(3)): pos_x, pos_y, delta
         u (float): delta
         dt (floar): timestep
 
@@ -45,12 +45,21 @@ class PlannerMPC:
         self.x_max, self.y_max = np.max(self.rp.path, axis=0) + 2
         self.psi_max, self.s_max = 100, self.rp.s_track[-1]
 
-        self.theta_min, self.p_min = -0.4, 0
-        self.theta_max, self.p_max = 0.4, 4
+        self.delta_min, self.p_min = -0.4, 0
+        self.delta_max, self.p_max = 0.4, 4
 
         self.u0 = np.zeros((self.N, self.nu))
         self.X0 = np.zeros((self.N + 1, self.nx))
         self.warm_start = False
+
+        self.lbg, self.ubg = None, None
+        self.lbx, self.ubx = None, None
+        self.nlp = None
+        self.solver = None
+        self.f = None
+        self.U = None
+        self.X = None
+        self.P = None
 
         self.init_optimisation()
         self.init_constraints()
@@ -65,20 +74,16 @@ class PlannerMPC:
         s = ca.MX.sym('s')
         # Controls
         v = ca.MX.sym('v')
-        theta = ca.MX.sym('theta')
+        delta = ca.MX.sym('delta')
         p = ca.MX.sym('p')
 
         states = ca.vertcat(x, y, psi, s)
-        controls = ca.vertcat(theta, p)
-        rhs = ca.vertcat(SPEED * ca.cos(psi), SPEED * ca.sin(psi), (SPEED / L) * ca.tan(theta), p)  # dynamic equations of the states
+        controls = ca.vertcat(delta, p)
+        rhs = ca.vertcat(SPEED * ca.cos(psi), SPEED * ca.sin(psi), (SPEED / L) * ca.tan(delta), p)  # dynamic equations of the states
         self.f = ca.Function('f', [states, controls], [rhs])  # nonlinear mapping function f(x,u)
         self.U = ca.MX.sym('U', self.nu, self.N)
         self.X = ca.MX.sym('X', self.nx, (self.N + 1))
         self.P = ca.MX.sym('P', self.nx + 2 * self.N) # init state and boundaries of the reference path
-
-        self.Q = ca.MX.zeros(2, 2)
-        self.Q[0, 0] = WEIGHT_CONTOUR  # cross track error
-        self.Q[1, 1] = WEIGHT_LAG  # lag error
 
     def init_constraints(self):
         '''Initialize constraints for states, dynamic model state transitions and control inputs of the system'''
@@ -96,9 +101,9 @@ class PlannerMPC:
         # Upper and lower bounds for the control optimization variables
         for k in range(self.N):
             self.lbx[state_count:state_count + self.nu, 0] = np.array(
-                [[self.theta_min, self.p_min]])  # v and theta lower bound
+                [[self.delta_min, self.p_min]])  # v and delta lower bound
             self.ubx[state_count:state_count + self.nu, 0] = np.array(
-                [[self.theta_max, self.p_max]])  # v and theta upper bound
+                [[self.delta_max, self.p_max]])  # v and delta upper bound
             state_count += self.nu
 
     def init_objective(self):
@@ -214,17 +219,19 @@ class PlannerMPC:
         return trajectory, inputs
         
     def construct_warm_start_soln(self, initial_state):
-        # Construct an initial estimated solution to warm start the optimization problem with valid path constraints
         #! this will break for multiple laps
         # if initial_state[3] >= self.arc_lengths_orig_l:
         #     initial_state[3] -= self.arc_lengths_orig_l
         self.X0 = np.zeros((self.N + 1, self.nx))
         p_initial = 2
         self.X0[0, :] = initial_state
-        self.X0[0, 2] = self.rp.angle_lut_t(initial_state[3])
+        # self.X0[0, 2] = self.rp.angle_lut_t(initial_state[3])
+            
         for k in range(1, self.N + 1):
             s_next = self.X0[k - 1, 3] + p_initial * self.dt
             psi_next = self.rp.angle_lut_t(s_next)
+            if initial_state[2] > np.pi:
+                psi_next += np.pi * 2
             x_next, y_next = self.rp.center_lut_x(s_next), self.rp.center_lut_y(s_next)
 
             self.X0[k, :] = np.array([x_next.full()[0, 0], y_next.full()[0, 0], psi_next.full()[0, 0], s_next])
@@ -236,18 +243,21 @@ class PlannerMPC:
         
     
 def run_simulation():
-    planner = PlannerMPC(0.1, 20)
+    planner = PlannerMPC(0.3, 10)
     planner.rp.plot_path()
 
     # x0 = np.array([20, 0, -3])
     # x0 = np.array([20, 0, -2.5])
-    x0 = np.array([0, 0, 0])
+    x0 = np.array([0, 0, 0.0])
+    # x0 = np.array([18, -4.8, 2.9])
     x = x0
     states = []
-    # x[2] += np.pi*2
+    x[2] += np.pi*2
+    x[2] += 0.5
     for i in range(70):
         # planner.rp.plot_path()
         u = planner.plan(x)
+        print(f"x: {x} --> Action: {u}")
         x = update_state(x, u, 0.1)
     
         states.append(x)
@@ -255,7 +265,8 @@ def run_simulation():
         plt.figure(2)
         plt.plot(x[0], x[1], "ro")
         plt.pause(0.0001)
-        plt.pause(0.5)
+        # plt.pause(0.5)
+        breakpoint()
 
         # plt.show()
         

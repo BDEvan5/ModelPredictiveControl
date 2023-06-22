@@ -37,6 +37,7 @@ def create_test_path():
     
     path = np.array(states)[:, 0:2]
     # path[:, 0] = path[::-1, 0]
+    # path[:, 1] = path[::-1, 1]
 
     return path
 
