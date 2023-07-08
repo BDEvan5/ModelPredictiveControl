@@ -233,7 +233,7 @@ class PlannerMPC:
 
             if initial_state[2] > np.pi/2 and psi_next < 0:
                 psi_next += np.pi * 2
-            if initial_state[2] < -np.pi/2:
+            if initial_state[2] < -np.pi/2 and psi_next > 0:
                 psi_next -= np.pi * 2
 
             x_next, y_next = self.rp.center_lut_x(s_next), self.rp.center_lut_y(s_next)
@@ -277,7 +277,7 @@ def run_simulation():
         # plt.show()
         
     plt.title("Vehicle Path")
-    plt.savefig("Imgs/FO_mpcc_vehicle_path.svg")
+    # plt.savefig("Imgs/FO_mpcc_vehicle_path.svg")
     plt.show()
     
 
